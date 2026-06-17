@@ -18,7 +18,10 @@ method is collection- and species-agnostic.
 
 ## Why it exists
 
-When one collection is sequenced at ~15× and another at ~4×, the shallow
+Germplasm banks often contain duplicate samples and use different naming schemes
+compared to other banks, this makes it difficult to assess whether one strain is truly 
+different to another or is even derived from one another. Some germplasm banks also have varying
+sequencing depths, when one collection is sequenced at ~15× and another at ~4×, the shallow
 samples recover only a fraction of their k-mers. This caps symmetric metrics
 (Jaccard) and makes the conserved, species-wide "core" dominate any
 containment score, so genuine duplicates and unrelated samples look alike.
@@ -44,9 +47,6 @@ side, so you can see the effect of masking on identical input.
 |------|---------|
 | `v6.sh` | Main pipeline. Self-contained SLURM orchestrator (panel build → union + variable mask → per-query scoring → aggregation). |
 | `aggregate.sh` | Cohort-level aggregation of per-query results into a single report. Supports `--exclude-self` for all-vs-all runs. |
-| `plot_score_distributions.py` | Jaccard & containment distributions (whole-set vs core-masked). |
-| `cluster_usda_eiar.py` | Clustered heatmap + MDS embedding of query↔panel similarity. |
-| `analyze_low_scorers.py` | Diagnose low-scoring samples by sequencing depth and (with metadata) by species / QC fields. |
 
 ---
 
