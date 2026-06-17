@@ -189,27 +189,6 @@ so each sample's reported top hit is its best *non-self* match.
 
 ---
 
-## Analysis & plotting
-
-```bash
-# Score distributions: whole-set vs core-masked Jaccard and containment
-python3 plot_score_distributions.py cohort_top_hits.tsv score_distributions.png
-
-# Clustered heatmap + MDS embedding of query↔panel similarity
-python3 cluster_usda_eiar.py cohort_all_hits.tsv jaccard_var cluster
-
-# Diagnose low scorers by depth, and by species/QC if metadata is supplied
-python3 analyze_low_scorers.py cohort_top_hits.tsv --meta metadata.tsv
-```
-
-`metadata.tsv` is a tab-separated table keyed by a `sample` column, with any of
-`species`, `coverage`, `n_reads`, `pct_dups`, … (e.g. assembled from GRIN
-passport data and/or MultiQC). When a `species` column is present, the script
-splits containment by species — useful for confirming that wild/progenitor
-accessions, not bad data, drive low scores.
-
----
-
 ## Typical workflows
 
 1. **Cross-collection reconciliation** — low-coverage queries vs a high-coverage
@@ -236,8 +215,3 @@ accessions, not bad data, drive low scores.
 
 ---
 
-
-
-## License
-
-Add a license of your choice (e.g. MIT) before publishing.
