@@ -1,6 +1,5 @@
 #!/bin/bash
-# ============================================================================
-# v6.s
+ # v6.s
 #
 # Self-contained orchestrator: writes all SLURM scripts (including the
 # per-sample query pipeline) into <project_workspace>/scripts/, then
@@ -16,20 +15,19 @@
 #
 # Note to future Jack, pipeline is still specific to JIC compute nodes, 
 # this will need fixing/changing in future, sincerely past jack
-# ============================================================================
-set -euo pipefail
 
-# ---------------------------------------------------------------------------
-# Logging helpers
-# ---------------------------------------------------------------------------
+# Variable mask will exclude the least distinguishing (present in 95%)
+# kmers so variable should be more meaningful we can hope.
+ set -euo pipefail
+
+ # Logging helpers
+
 log()  { echo "[$(date '+%H:%M:%S')] $*"; }
 warn() { echo "[$(date '+%H:%M:%S')] WARN: $*" >&2; }
 die()  { echo "[$(date '+%H:%M:%S')] ERROR: $*" >&2; exit 1; }
 
-# ---------------------------------------------------------------------------
-# Argument Parsing
-# ---------------------------------------------------------------------------
-IGNORE_CORRUPT=0
+ # Argument Parsing
+ IGNORE_CORRUPT=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -66,18 +64,14 @@ if [ "$#" -ne 3 ]; then
     exit 1
 fi
 
-# ---------------------------------------------------------------------------
-# Pre-run: check if on a SLURM head node
-# ---------------------------------------------------------------------------
-command -v sbatch >/dev/null 2>&1 \
+ # Pre-run: check if on a SLURM head node, not usable on anythign else atm
+ command -v sbatch >/dev/null 2>&1 \
     || die "sbatch not found — this script must be run on a SLURM head node."
 command -v squeue >/dev/null 2>&1 \
     || die "squeue not found — SLURM tools are not available on this node."
 
-# ---------------------------------------------------------------------------
-# Resolve paths
-# ---------------------------------------------------------------------------
-PANEL_DIR=$(realpath "$1" 2>/dev/null) \
+ # Resolve paths, do not waste time w non existing directory bc of spelling mistake
+ PANEL_DIR=$(realpath "$1" 2>/dev/null) \
     || die "Cannot resolve panel_fastq_dir '$1' — does it exist?"
 QUERY_DIR=$(realpath "$2" 2>/dev/null) \
     || die "Cannot resolve query_fastq_dir '$2' — does it exist?"
@@ -104,10 +98,8 @@ if [ "$IGNORE_CORRUPT" -eq 1 ]; then
     log "Ignore Corrupt    : ENABLED (Corrupt samples will be skipped gracefully)"
 fi
 
-# ---------------------------------------------------------------------------
-# Helper: validate job ID returned by sbatch --parsable
-# ---------------------------------------------------------------------------
-validate_job_id() {
+ # Helper: validate job ID returned by sbatch --parsable, deal with slurms bs
+ validate_job_id() {
     local jid="$1"
     local phase="$2"
     [[ "$jid" =~ ^[0-9]+$ ]] \
@@ -115,10 +107,8 @@ validate_job_id() {
     log "  Job ID: $jid"
 }
 
-# ---------------------------------------------------------------------------
-# Helper: Generate Sample Sheet from Directory
-# ---------------------------------------------------------------------------
-generate_sheet() {
+ # Helper: Generate Sample Sheet from Directory
+ generate_sheet() {
     local in_dir=$1
     local out_sheet=$2
     local label=$3
@@ -195,15 +185,13 @@ QUERY_COUNT=$(($(wc -l < "$QUERY_SHEET") - 1))
 
 log "Panel: $PANEL_COUNT sample(s)  |  Query: $QUERY_COUNT sample(s)"
 
-# ============================================================================
-# Write SLURM scripts, note to future jack this is still specific to JIC nodes, sincerely past Jack
-# ============================================================================
-log "Writing SLURM scripts to $SCRIPTS_DIR ..."
-
-# ---------------------------------------------------------------------------
-# Phase 0: Per-sample query pipeline
-# ---------------------------------------------------------------------------
-cat << 'EOF_SLURM_HEAD' > "${SCRIPTS_DIR}/teff_query_pipeline.slurm"
+ # Write SLURM scripts, note to future jack this is still specific to JIC nodes, sincerely past Jack
+ log "Writing SLURM scripts to $SCRIPTS_DIR ..."
+ 
+ # Note this is where the sbatch p line should be edited for non JIC systems
+ 
+ # Phase 0: Per-sample query pipeline
+ cat << 'EOF_SLURM_HEAD' > "${SCRIPTS_DIR}/teff_query_pipeline.slurm"
 #!/bin/bash -e
 #SBATCH -p jic-medium,nbi-medium
 #SBATCH -t 06:00:00
@@ -301,7 +289,7 @@ echo "  thresholds: jaccard>=${JACCARD_THRESHOLD}  containment>=${CONTAINMENT_TH
 echo "  query_ci  : ${QUERY_CI}   mask_core: ${MASK_CORE}"
 echo "============================================================"
 
-# STAGE 1 — QC + Trim (FASTQ ONLY)
+# STAGE 1 — QC + Trim (FASTQ ONLY) (should be fixed me thinks)
 _stage="fastp-trim"
 echo; echo ">>> [1/4] Prep / Trim"
 
@@ -650,10 +638,8 @@ echo "Done."
 QUERY_PIPELINE_EOF
 chmod +x "${SCRIPTS_DIR}/teff_query_pipeline.slurm"
 
-# ---------------------------------------------------------------------------
-# Phase 1: Panel DB Builder
-# ---------------------------------------------------------------------------
-cat << 'EOF_SLURM_P1' > "${SCRIPTS_DIR}/01_build_panel.slurm"
+ # Phase 1: Panel DB Builder
+ cat << 'EOF_SLURM_P1' > "${SCRIPTS_DIR}/01_build_panel.slurm"
 #!/bin/bash -e
 #SBATCH -p jic-medium,nbi-medium
 #SBATCH -t 04:00:00
@@ -728,10 +714,8 @@ else
 fi
 EOF_P1
 
-# ---------------------------------------------------------------------------
-# Phase 2: Panel Union & Metadata  (with sanity check)
-# ---------------------------------------------------------------------------
-cat << 'EOF' > "${SCRIPTS_DIR}/02_union_panel.slurm"
+ # Phase 2: Panel Union & Metadata  (with sanity check)
+ cat << 'EOF' > "${SCRIPTS_DIR}/02_union_panel.slurm"
 #!/bin/bash -e
 #SBATCH -p jic-medium,nbi-medium
 #SBATCH -t 12:00:00
@@ -769,14 +753,12 @@ CORE_FREQ_FRAC="${CORE_FREQ_FRAC:-0.95}"
 VAR_DB="${UNION_DIR}/panel_variable"
 EXISTING_SIZES_VAR="${UNION_DIR}/accession_sizes_var.tsv"
 
-# ---------------------------------------------------------------------------
-# Completeness assert (runs because Phase 2 depends on Phase 1 via afterany).
+ # Completeness assert (runs because Phase 2 depends on Phase 1 via afterany).
 # Every accession listed in the panel sheet must have a KMC db on disk.
 # A gap here means Phase 1 never finished that task — most commonly a
 # NODE_FAIL that --requeue couldn't recover. Report it loudly rather than
 # unioning a silently-incomplete panel.
-# ---------------------------------------------------------------------------
-if [[ -n "${PANEL_SHEET}" && -e "${PANEL_SHEET}" ]]; then
+ if [[ -n "${PANEL_SHEET}" && -e "${PANEL_SHEET}" ]]; then
     echo "0. Verifying panel completeness against sheet: ${PANEL_SHEET}"
     echo -e "sample_id\trow\treason" > "$MISSING_FILE"
     n_expected=0
@@ -882,16 +864,14 @@ U=$(kmc_tools transform "${PANEL_UNION_DB}" dump /dev/stdout 2>/dev/null | wc -l
 echo "$U" > "$PANEL_U_FILE"
 echo "    |U| = ${U} k-mers"
 
-# ---------------------------------------------------------------------------
-# v6: variable-fraction mask. Build a per-k-mer panel occurrence count (each
+ # v6: variable-fraction mask. Build a per-k-mer panel occurrence count (each
 # accession contributes presence=1, summed across accessions), then keep only
 # k-mers present in FEWER than CORE_FREQ_FRAC of accessions. Conserved core
 # k-mers (in ~all accessions) carry no discriminating signal and dominate
 # whole-set Jaccard at low coverage; Phase 3's *_var metrics are computed
 # against this variable set. Non-fatal on failure: warns, leaves VAR_DB absent,
 # and Phase 3 then reports legacy metrics only.
-# ---------------------------------------------------------------------------
-if [[ "${MASK_CORE}" == "1" ]]; then
+ if [[ "${MASK_CORE}" == "1" ]]; then
     # MASK_PAR = how many kmc_tools transforms/intersects to run at once. The
     # per-accession set_counts and na_var steps are independent and were the
     # cause of the v6.0 Phase-2 wall-clock blowout when run serially (~2x220
@@ -1016,10 +996,8 @@ fi
 echo "Done Phase 2."
 EOF
 
-# ---------------------------------------------------------------------------
-# Phase 3: Query Submission Wrapper
-# ---------------------------------------------------------------------------
-cat << 'EOF' > "${SCRIPTS_DIR}/03_run_queries.slurm"
+ # Phase 3: Query Submission Wrapper
+ cat << 'EOF' > "${SCRIPTS_DIR}/03_run_queries.slurm"
 #!/bin/bash -e
 #SBATCH -p jic-medium,nbi-medium
 #SBATCH -t 06:00:00
@@ -1045,10 +1023,8 @@ PIPELINE_SCRIPT="$5"
 bash "${PIPELINE_SCRIPT}" --sample-sheet "${QUERY_SHEET}"
 EOF
 
-# ============================================================================
-# Job Submission Orchestration
-# ============================================================================
-log "Submitting SLURM pipeline..."
+ # Job Submission Orchestration
+ log "Submitting SLURM pipeline..."
 
 J1=$(sbatch --parsable --array=1-${PANEL_COUNT} \
     --export=ALL,PANEL_CI="${PANEL_CI:-4}" \
@@ -1074,10 +1050,8 @@ J3=$(sbatch --parsable --dependency=afterok:${J2} --array=1-${QUERY_COUNT} \
     "${SCRIPTS_DIR}/teff_query_pipeline.slurm")
 validate_job_id "$J3" "Phase 3 (queries)"
 
-# ---------------------------------------------------------------------------
-# Phase 4: Cohort aggregation (depends on Phase 3, runs even if some queries failed)
-# ---------------------------------------------------------------------------
-SELF_DIR="$(dirname "$(realpath "$0")")"
+ # Phase 4: Cohort aggregation (depends on Phase 3, runs even if some queries failed)
+ SELF_DIR="$(dirname "$(realpath "$0")")"
 AGGREGATE_SCRIPT="${SELF_DIR}/aggregate.sh"
 
 if [[ ! -e "${AGGREGATE_SCRIPT}" ]]; then
