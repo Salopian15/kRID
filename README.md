@@ -1,45 +1,24 @@
 # kRID
 kmer based redundancy and identity detection of germplasm samples.
-# DEDUKT
+# kRID
+Alignment-free pipeline for detecting duplicate and redundant accessions across plant g
+ermplasm collections from genome sequencing data.
 
-**DEDUplication by K-mer Testing** — an alignment-free pipeline for detecting
-duplicate and redundant accessions across plant germplasm collections from
-whole-genome sequencing data.
-
-DEDUKT compares each query sample against a reference panel using shared
-k-mer content (via [KMC](https://github.com/refresh-bio/KMC)), and is built
-specifically to stay robust when the two collections were sequenced at very
-different depths — the situation where naïve whole-genome similarity breaks
-down. It was developed to reconcile a low-coverage USDA teff (*Eragrostis tef*)
-collection against a high-coverage Ethiopian (EIAR) reference panel, but the
+kRID compares each query sample against a reference panel using shared
+k-mer content (via [KMC](https://github.com/refresh-bio/KMC)). It was developed to reconcile the multiple
+different *Eragrostis tef* germplasm databases currently available to researchers, 
+namely the USDA, Ethiopian (EIAR) and IBERS sample panels, but the
 method is collection- and species-agnostic.
 
 ---
 
 ## Why it exists
 
-Germplasm banks often contain duplicate samples and use different naming schemes
-compared to other banks, this makes it difficult to assess whether one strain is truly 
-different to another or is even derived from one another. Some germplasm banks also have varying
-sequencing depths, when one collection is sequenced at ~15× and another at ~4×, the shallow
-samples recover only a fraction of their k-mers. This caps symmetric metrics
-(Jaccard) and makes the conserved, species-wide "core" dominate any
-containment score, so genuine duplicates and unrelated samples look alike.
-DEDUKT addresses this with two ideas:
+Germplasm banks containing duplicate samples and use different naming schemes
+compared to other banks is a known issue and makes it difficult to assess whether
+a sample being used in one location with one name attached to it is the same sample
+labelled as such in another database.
 
-1. **Directional containment** — score what fraction of the *smaller* (shallow)
-   sample's k-mers are present in the reference accession, rather than a
-   symmetric overlap that the depth gap caps.
-2. **Variable-fraction core-masking** — restrict scoring to k-mers that are
-   *not* shared by almost every accession in the panel (the "variable" or
-   polymorphic fraction). This is the k-mer analogue of dropping monomorphic
-   sites and genotyping on polymorphic markers only, and it removes the
-   conserved core that otherwise inflates similarity.
-
-Both legacy whole-set metrics and the core-masked metrics are reported side by
-side, so you can see the effect of masking on identical input.
-
----
 
 ## Repository contents
 
@@ -52,14 +31,12 @@ side, so you can see the effect of masking on identical input.
 
 ## Requirements
 
-- **KMC ≥ 3.0** (`kmc`, `kmc_tools`) on `PATH`
-- **SLURM** (`sbatch`) — the pipeline submits a dependent 4-phase job chain
+- **KMC ≥ 3.0** (`kmc`, `kmc_tools`) on `PATH`, slurm modules should work fine too
+- **SLURM** (`sbatch`) — the pipeline submits a dependent 4-phase job chain, currently hard-coded to the JIC slurm node names but easy to change
 - **bash ≥ 4**, **gawk**, coreutils
-- **Python ≥ 3.8** with `pandas`, `numpy`, `scipy`, `matplotlib` (for the
-  analysis/plotting scripts only)
 
 > **Cluster note:** the `#SBATCH -p jic-medium,nbi-medium` partition lines in
-> `v6.sh` are specific to the John Innes Centre cluster. Edit them (and the
+> `v6.sh` are specific and won't work outside of the JIC cluster. Edit them (and the
 > time/memory/core requests) to match your scheduler before running elsewhere.
 
 ---
@@ -76,10 +53,10 @@ bash v6.sh --ignore-corrupt  panel_dir/  query_dir/  my_workspace
 
 Three positional arguments: `<panel_input_dir> <query_input_dir> <project_workspace>`.
 Use a fresh `<project_workspace>` per run — results are written there and
-nothing outside it is touched.
+nothing outside it is touched, older results may be overwritten too.
 
 When the job chain finishes, the headline result is in
-`my_workspace/cohort_report.txt`.
+`project_workspace/cohort_report.txt`.
 
 ---
 
@@ -110,20 +87,13 @@ All optional; defaults match the low-coverage reconciliation use case.
 | `CONTAINMENT_THRESHOLD` | `0.95` | Containment cutoff for the `REDUNDANT`/`SUBSET` flag. |
 | `MIN_PANEL_KMERS` | `1000000` | Panel accessions with fewer k-mers are excluded by a sanity check. |
 
-Example — sweep the masking threshold into separate workspaces:
-
-```bash
-for f in 0.80 0.90 0.95 0.99; do
-  CORE_FREQ_FRAC=$f bash v6.sh --ignore-corrupt panel_dir/ query_dir/ ws_f${f/./}
-done
-```
 
 ---
 
 ## Output layout
 
 ```
-my_workspace/
+project_workspace/
 ├── panel_union/
 │   ├── unified_teff_kmers.*        # union of all panel k-mers
 │   ├── accession_sizes.tsv         # |k-mers| per panel accession
@@ -171,47 +141,6 @@ For a query *B* against a panel accession *A* (`ni = |A∩B|`, `na = |A|`, `nb =
 bash aggregate.sh my_workspace
 ```
 
-It resolves columns by header name, so it works on both legacy and
-variable-fraction workspaces.
-
-### All-vs-all (within-collection duplicates)
-
-To find duplicates *within* one collection, use it as both panel and query, and
-exclude the trivial self-matches:
-
-```bash
-PANEL_CI=2 bash v6.sh --ignore-corrupt collection_dir/ collection_dir/ self_run
-bash aggregate.sh --exclude-self self_run
-```
-
-`--exclude-self` drops rows where the panel accession equals the query sample,
-so each sample's reported top hit is its best *non-self* match.
+Will combine results across the per accession results into easier to read files.
 
 ---
-
-## Typical workflows
-
-1. **Cross-collection reconciliation** — low-coverage queries vs a high-coverage
-   panel: `bash v6.sh --ignore-corrupt panel/ query/ recon` then read the
-   VARIABLE-FRACTION section of `recon/cohort_report.txt`.
-2. **Positive control** — run a collection with *known* duplicates against the
-   panel and confirm those pairs score high on `containment_var` (calibrates
-   the masking threshold).
-3. **Within-collection deduplication** — all-vs-all with `--exclude-self`.
-4. **Masking sensitivity** — sweep `CORE_FREQ_FRAC`.
-
----
-
-## Notes & caveats
-
-- The variable-mask build (Phase 2) binarises every panel accession and sums
-  occurrence across the panel; it needs transient scratch roughly the size of
-  the panel and is the most compute-heavy step. It parallelises over
-  `MASK_PAR` workers and degrades cleanly to legacy-only metrics if it fails.
-- Counter caps: the per-k-mer occurrence sum uses `-cs` sized to the panel; for
-  panels larger than ~250 accessions check that KMC counter limits are adequate.
-- `aggregate.sh --exclude-self` matches self by exact `sample == panel` string
-  equality; ensure panel and query naming are identical in all-vs-all runs.
-
----
-
