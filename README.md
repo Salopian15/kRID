@@ -1,6 +1,5 @@
 # kRID
 kmer based redundancy and identity detection of germplasm samples.
-# kRID
 Alignment-free pipeline for detecting duplicate and redundant accessions across plant g
 ermplasm collections from genome sequencing data.
 
