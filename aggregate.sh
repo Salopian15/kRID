@@ -7,35 +7,16 @@
 # Usage:
 #   ./aggregate.sh <project_workspace>
 #
-# Generates (in <project_workspace>/):
-#   cohort_top_hits.tsv         one row per query (rank-1 legacy hit + flag)
-#   cohort_all_hits.tsv         all rows from every summary.tsv concatenated
-#   cohort_panel_frequency.tsv  panel accession -> n_top_hits (legacy), desc
-#   cohort_report.txt           human-readable cohort summary report
-#
-#   v6 variable-fraction outputs (only when summary_var.tsv files are present):
-#   cohort_top_hits_var.tsv         rank-1 variable-fraction hit per query
-#   cohort_all_hits_var.tsv         all variable-fraction rows concatenated
-#   cohort_panel_frequency_var.tsv  panel accession -> n_top_hits (var), desc
-#
-# Version handling (ADDITIVE — nothing v5 did is removed):
-#   Columns are resolved BY HEADER NAME, not by fixed position, so this script
-#   works unchanged on both v5 workspaces (flag at col 11) and v6 workspaces
-#   (flag at col 17, with containment_q / *_var columns inserted ahead of it).
-#   If the workspace has no variable-fraction data, the var sections are simply
-#   skipped and the output is identical in spirit to the v5 report.
 #
 # Env vars (read from environment, defaults match the pipeline):
 #   JACCARD_THRESHOLD       0.85
 #   CONTAINMENT_THRESHOLD   0.95
 # ============================================================================
+
+# Note to future jack check for self v self runs
 set -euo pipefail
 
-# --- argument parsing ------------------------------------------------------
-# --exclude-self : drop rows where the panel accession == the query sample.
-#                  Use for all-vs-all runs (e.g. USDA-vs-USDA) where every
-#                  sample's rank-1 hit is itself; the top hit then becomes the
-#                  best NON-self match.
+# Add exclude self, was causing issues with self vs self checks of the EIAR database.
 EXCLUDE_SELF=0
 POSITIONAL=()
 while [[ $# -gt 0 ]]; do
@@ -71,13 +52,11 @@ COHORT_TOP_VAR="${PROJ_DIR}/cohort_top_hits_var.tsv"
 COHORT_ALL_VAR="${PROJ_DIR}/cohort_all_hits_var.tsv"
 COHORT_FREQ_VAR="${PROJ_DIR}/cohort_panel_frequency_var.tsv"
 
-# Fallback header (v6 layout) used only if no summary.tsv exists to learn from.
+# Fallback header used only if no summary.tsv exists to get from.
 DEFAULT_HEADER="sample	rank	panel	na	nb	n_intersect	n_union	jaccard	containment	shared_state_rate	containment_q	na_var	nb_var	n_intersect_var	jaccard_var	containment_var	flag	flag_var"
 
-# ---------------------------------------------------------------------------
-# 0. Resolve column indices by header name (version-robust).
-#    Sets COL_<name> globals; missing names stay empty.
-# ---------------------------------------------------------------------------
+# Resolve column indices by header name .
+
 COL_sample=""; COL_rank=""; COL_panel=""; COL_jaccard=""; COL_containment=""
 COL_ssr=""; COL_containment_q=""; COL_na_var=""; COL_nb_var=""; COL_ni_var=""
 COL_jaccard_var=""; COL_containment_var=""; COL_flag=""; COL_flag_var=""
@@ -106,7 +85,7 @@ resolve_cols() {
     done < <(printf '%s\n' "$hdr" | tr '\t' '\n')
 }
 
-# Get the header from the first available summary.tsv (else fall back).
+# Get the header from the first available summary.tsv.
 SUMMARY_HEADER="${DEFAULT_HEADER}"
 first_summary="$(find "${WORKDIR}" -mindepth 2 -maxdepth 2 -name summary.tsv 2>/dev/null | head -1 || true)"
 if [[ -n "${first_summary}" && -e "${first_summary}" ]]; then
@@ -114,7 +93,7 @@ if [[ -n "${first_summary}" && -e "${first_summary}" ]]; then
 fi
 resolve_cols "${SUMMARY_HEADER}"
 
-# Sanity: flag and jaccard columns are mandatory for the report to make sense.
+# Sanity: flag and jaccard columns are mandatory for the report to make sense (learn from past jacks mistakes).
 [[ -n "${COL_flag}" ]]    || { echo "ERROR: could not locate 'flag' column in summary header." >&2; exit 1; }
 [[ -n "${COL_jaccard}" ]] || { echo "ERROR: could not locate 'jaccard' column in summary header." >&2; exit 1; }
 [[ -n "${COL_panel}" ]]   || COL_panel=3
@@ -122,7 +101,7 @@ resolve_cols "${SUMMARY_HEADER}"
 [[ -n "${COL_containment}" ]] || COL_containment=9
 [[ -n "${COL_ssr}" ]]     || COL_ssr=10
 
-# Does this workspace carry variable-fraction data?
+# Check if variable mask is being used here. This is the part that (ideally) uses the more meaningful segment of the genome.
 HAS_VAR=0
 if [[ -n "${COL_flag_var}" && -n "${COL_jaccard_var}" ]]; then
     if find "${WORKDIR}" -mindepth 2 -maxdepth 2 -name summary_var.tsv 2>/dev/null | grep -q .; then
@@ -131,8 +110,7 @@ if [[ -n "${COL_flag_var}" && -n "${COL_jaccard_var}" ]]; then
 fi
 
 # Collate one per-query summary into the cohort all-hits + top-hit files.
-# With --exclude-self, rows whose panel == sample are dropped, and the "top
-# hit" becomes the first NON-self row (i.e. best real match in an all-vs-all).
+
 collate_one() {
     local src="$1" call="$2" top="$3"
     if (( EXCLUDE_SELF )); then
@@ -146,9 +124,7 @@ collate_one() {
     fi
 }
 
-# ---------------------------------------------------------------------------
-# 1. Collate per-query summary.tsv files (legacy ranking, non masked).
-# ---------------------------------------------------------------------------
+# Collate per-query summary.tsv files (full ranking, non masked).
 echo "${SUMMARY_HEADER}" > "${COHORT_TOP}"
 echo "${SUMMARY_HEADER}" > "${COHORT_ALL}"
 
@@ -173,9 +149,8 @@ for sample_dir in "${WORKDIR}"/*/; do
 done
 shopt -u nullglob
 
-# ---------------------------------------------------------------------------
-# 1b. Collate per-query summary_var.tsv files (variable-fraction ranking).
-# ---------------------------------------------------------------------------
+# Collate per-query summary_var.tsv files (variable-fraction ranking).
+
 n_var_total=0
 if (( HAS_VAR )); then
     echo "${SUMMARY_HEADER}" > "${COHORT_TOP_VAR}"
@@ -190,9 +165,8 @@ if (( HAS_VAR )); then
     shopt -u nullglob
 fi
 
-# ---------------------------------------------------------------------------
-# 2. Panel hit frequency (legacy, and var if present).
-# ---------------------------------------------------------------------------
+# Panel hit frequency (legacy, and var if present).
+
 echo -e "panel\tn_top_hits" > "${COHORT_FREQ}"
 if (( n_total > 0 )); then
     tail -n +2 "${COHORT_TOP}" | cut -f"${COL_panel}" \
@@ -209,9 +183,8 @@ if (( HAS_VAR )); then
     fi
 fi
 
-# ---------------------------------------------------------------------------
-# 3. Distribution helper: min/q25/median/q75/max/mean of a numeric column.
-# ---------------------------------------------------------------------------
+# Distribution helper: min/q25/median/q75/max/mean of a numeric column.
+
 dist_of() {  # dist_of <tsv_with_header> <col_index> <n_rows>
     local file="$1" col="$2" n="$3"
     if (( n <= 0 )); then echo "- - - - - -"; return; fi
@@ -277,9 +250,8 @@ n_var_set="?"
 pct() { awk -v n="$1" -v d="$2" 'BEGIN{
     if (d>0) printf "%5.1f%%", 100*n/d; else printf "  -  " }'; }
 
-# ---------------------------------------------------------------------------
-# 6. Build the human-readable report.
-# ---------------------------------------------------------------------------
+# Make a more readable summary of the results
+
 {
     echo "================================================================"
     echo "  TEFF COHORT REDUNDANCY REPORT"
@@ -352,7 +324,8 @@ pct() { awk -v n="$1" -v d="$2" 'BEGIN{
     fi
     echo ""
 
-    # -------------------- VARIABLE-FRACTION (v6) --------------------
+    # Variable mask run
+    
     if (( HAS_VAR )); then
         echo "================================================================"
         echo "### VARIABLE-FRACTION  (core-masked; coverage-robust signal) ###"
