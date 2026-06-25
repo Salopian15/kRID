@@ -60,6 +60,8 @@ if [ "$#" -ne 3 ]; then
     echo "  PANEL_CI                FASTQ panel-build k-mer min-count (default 4)"
     echo "  MASK_CORE               also score on the variable k-mer fraction (default 1)"
     echo "  CORE_FREQ_FRAC          k-mers in >= this frac of accessions are 'core' (default 0.95)"
+    echo "  MASK_POOL               accessions that define the mask: all|small|large (default all)"
+    echo "  MASK_POOL_CUTOFF        k-mer-count cutoff for small/large (default: median)"
     echo "  MASK_PAR                parallel kmc_tools workers in the mask build (default 12)"
     exit 1
 fi
@@ -880,8 +882,49 @@ echo "    |U| = ${U} k-mers"
     # is cheap; default 12 leaves headroom on a 16-core node.
     MASK_PAR="${MASK_PAR:-12}"
     echo "4. Building variable-fraction mask (core_freq_frac=${CORE_FREQ_FRAC}, parallel=${MASK_PAR})..."
-    core_min=$(awk -v n="${n_good}" -v f="${CORE_FREQ_FRAC}" 'BEGIN{v=int(n*f); if(v<1)v=1; print v}')
-    echo "    core threshold: present in >= ${core_min} of ${n_good} accession(s) is masked out"
+
+    # v6.1: choose WHICH accessions define the core/variable partition. "Core"
+    # ("present in >= CORE_FREQ_FRAC of accessions") is only meaningful if those
+    # accessions actually recover their conserved k-mers, so the pool used to
+    # DEFINE the mask matters. MASK_POOL selects it by per-accession k-mer count
+    # (a depth proxy from accession_sizes.tsv):
+    #   all   - every retained accession (default; backwards compatible)
+    #   small - only accessions with n_kmers <= cutoff (the lower-depth pool)
+    #   large - only accessions with n_kmers >= cutoff (the higher-depth pool)
+    # cutoff defaults to the median k-mer count; override with MASK_POOL_CUTOFF.
+    # NOTE: defining the core over a LOW-depth pool needs a LOWER CORE_FREQ_FRAC
+    # to absorb per-sample k-mer dropout. At depth d the single-copy recovery is
+    # ~1 - e^-d - d*e^-d (~91% at 4x), so a conserved k-mer sits near that
+    # fraction, not 1.0 -- use ~0.85-0.90, not 0.95, or the core leaks into VAR.
+    # On a bimodal mix (e.g. low-depth USDA + high-depth IBERS) the median falls
+    # inside the larger cluster; set MASK_POOL_CUTOFF in the gap to split cleanly.
+    MASK_POOL="${MASK_POOL:-all}"
+    MASK_HEADER_FILE="${UNION_DIR}/mask_list.txt"
+    if [[ "${MASK_POOL}" == "all" ]]; then
+        cp "${HEADER_FILE}" "${MASK_HEADER_FILE}"
+    else
+        if [[ -n "${MASK_POOL_CUTOFF:-}" ]]; then
+            mask_cutoff="${MASK_POOL_CUTOFF}"
+        else
+            mask_cutoff=$(awk -F'\t' 'NR>1{print $2}' "${EXISTING_SIZES}" | sort -n \
+                | awk '{a[NR]=$1} END{ if(NR==0){print 0} else if(NR%2){print a[(NR+1)/2]} else {print int((a[NR/2]+a[NR/2+1])/2)} }')
+        fi
+        awk -F'\t' -v c="${mask_cutoff}" -v pool="${MASK_POOL}" \
+            'NR>1 { keep=(pool=="small")?($2<=c):($2>=c); if(keep) print $1 }' \
+            "${EXISTING_SIZES}" > "${MASK_HEADER_FILE}.sel"
+        grep -Fxf "${MASK_HEADER_FILE}.sel" "${HEADER_FILE}" > "${MASK_HEADER_FILE}" || true  # keep panel order
+        rm -f "${MASK_HEADER_FILE}.sel"
+        echo "    MASK_POOL=${MASK_POOL}: cutoff = ${mask_cutoff} k-mers"
+    fi
+    n_mask=$(awk 'NF' "${MASK_HEADER_FILE}" | wc -l)
+    if (( n_mask < 2 )); then
+        echo "    WARN: MASK_POOL='${MASK_POOL}' selected ${n_mask} accession(s); falling back to all ${n_good}."
+        cp "${HEADER_FILE}" "${MASK_HEADER_FILE}"
+        n_mask="${n_good}"
+    fi
+    core_min=$(awk -v n="${n_mask}" -v f="${CORE_FREQ_FRAC}" 'BEGIN{v=int(n*f); if(v<1)v=1; print v}')
+    echo "    mask defined over ${n_mask} of ${n_good} accession(s) (MASK_POOL=${MASK_POOL})"
+    echo "    core threshold: present in >= ${core_min} of ${n_mask} accession(s) is masked out"
     bin_dir="${UNION_DIR}/bin_presence"
     freq_cfg="${UNION_DIR}/kmc_freq.config"
     freq_db="${UNION_DIR}/panel_freq"
@@ -904,8 +947,8 @@ echo "    |U| = ${U} k-mers"
         }
         export -f binarise_one
         export PANEL_DBS bin_dir
-        echo "    [4a] binarising ${n_good} accessions (set_counts 1)..."
-        grep -v '^[[:space:]]*$' "${HEADER_FILE}" \
+        echo "    [4a] binarising ${n_mask} accessions (set_counts 1)..."
+        grep -v '^[[:space:]]*$' "${MASK_HEADER_FILE}" \
             | xargs -P "${MASK_PAR}" -I{} bash -c 'binarise_one "$@"' _ {} \
             || { echo "    ERROR: a set_counts worker failed" >&2; exit 1; }
 
@@ -914,7 +957,7 @@ echo "    |U| = ${U} k-mers"
             [ -z "$sid" ] && continue
             [ -e "${bin_dir}/${sid}.kmc_pre" ] \
                 || { echo "    ERROR: binarised db missing for ${sid}" >&2; exit 1; }
-        done < "${HEADER_FILE}"
+        done < "${MASK_HEADER_FILE}"
 
         # --- 4b. Build the complex-sum config in panel order ---
         echo "INPUT:" > "${freq_cfg}"
@@ -925,12 +968,12 @@ echo "    |U| = ${U} k-mers"
             echo "  s${i} = ${bin_dir}/${sid}" >> "${freq_cfg}"
             bsets+=("s${i}")
             i=$((i+1))
-        done < "${HEADER_FILE}"
+        done < "${MASK_HEADER_FILE}"
         echo "OUTPUT:" >> "${freq_cfg}"
         sumexpr=$(IFS=+; echo "${bsets[*]}")
         echo "  ${freq_db} = ${sumexpr}" >> "${freq_cfg}"
         echo "OUTPUT_PARAMS:" >> "${freq_cfg}"
-        echo "  -ci1 -cs$((n_good + 1))" >> "${freq_cfg}"
+        echo "  -ci1 -cs$((n_mask + 1))" >> "${freq_cfg}"
 
         # --- 4c. Sum (single, unparallelizable step) and reduce to var set ---
         echo "    [4c] summing occurrence counts across accessions (kmc_tools complex)..."
