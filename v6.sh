@@ -973,7 +973,11 @@ echo "    |U| = ${U} k-mers"
         sumexpr=$(IFS=+; echo "${bsets[*]}")
         echo "  ${freq_db} = ${sumexpr}" >> "${freq_cfg}"
         echo "OUTPUT_PARAMS:" >> "${freq_cfg}"
-        echo "  -ci1 -cs$((n_mask + 1))" >> "${freq_cfg}"
+        # Cap -cs at 65535 (uint16 max). KMC's internal counter type is uint16 in
+        # most builds; -cs > 65535 causes complex to fail. Below that, n_mask+1
+        # preserves full dynamic range; uint8 overflow (n_mask > 255) is also covered.
+        cs_cap=$(( (n_mask + 1) < 65535 ? (n_mask + 1) : 65535 ))
+        echo "  -ci1 -cs${cs_cap}" >> "${freq_cfg}"
 
         # --- 4c. Sum (single, unparallelizable step) and reduce to var set ---
         echo "    [4c] summing occurrence counts across accessions (kmc_tools complex)..."
